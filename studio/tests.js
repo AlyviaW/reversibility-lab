@@ -1,0 +1,17 @@
+const assert=require('node:assert/strict');
+const E=require('./engine.js');
+const p=()=>({decision:{action:'Enter 24-month contract',date:'2026-10-01',unrecoverable:'',affordable:'',lowerCostPossible:'yes'},assumption:{text:'Customers will reorder'},profile:Object.fromEntries(E.dimensions.map(x=>[x,'low'])),gates:{legal:'clear',harm:'no'},evidence:{strength:'1',sourceDate:'2026-09-20',source:'Experiment log',observation:'Initial paid order',relevance:'yes',disconfirm:'yes',independent:'yes'},exit:{signal:'Reorder rate',threshold:'Below 30%',owner:'Commercial lead',right:'yes'}});
+let a=p();assert.equal(E.evaluate(a).requiredTier,1);assert.equal(E.evaluate(a).action,'PROCEED WITH MONITORING');
+a.profile.contract='high';assert.equal(E.evaluate(a).requiredTier,3);assert.equal(E.evaluate(a).action,'TEST SMALLER / RENEGOTIATE');
+a.gates.legal='blocked';assert.equal(E.evaluate(a).action,'BLOCK / REDESIGN');
+a.gates.legal='clear';a.profile.contract='unknown';assert.equal(E.evaluate(a).action,'CLARIFY EXPOSURE');
+a.profile.contract='low';a.decision.unrecoverable='50000';a.decision.affordable='10000';assert.equal(E.evaluate(a).requiredTier,3);
+a.evidence.strength='3';a.evidence.independent='no';assert.equal(E.evaluate(a).evidence.adequate,false);a.evidence.independent='yes';assert.equal(E.evaluate(a).evidence.adequate,true);
+a.gates.harm='unknown';assert.equal(E.evaluate(a).action,'VERIFY HARD CONSTRAINT');
+assert.equal(E.composite(['','','','',''],[25,25,20,15,15]).status,'Awaiting assessment');
+assert.equal(E.composite([4,4,4,4,4],[25,25,20,15,15]).value,100);
+assert.equal(E.composite([4,4,4,4,4],[25,25,25,15,15]).status,'Invalid weights');
+const alt={profile:Object.fromEntries(E.dimensions.map(x=>[x,'low'])),unrecoverable:'1000',affordable:'10000'};
+assert.equal(E.alternativeTier(alt).tier,1);
+a.gates.harm='no';a.evidence.sourceDate='2026-11-01';assert.equal(E.evaluate(a).evidence.status,'Post-decision evidence');
+console.log('13 rules validated: explicit gates, decision-specific exposure, evidence thresholds, unknowns, and weight checks.');

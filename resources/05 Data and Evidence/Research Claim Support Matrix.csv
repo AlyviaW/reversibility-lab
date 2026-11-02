@@ -1,0 +1,12 @@
+Claim in manuscript or website,Supporting material,Support type,What remains unproven,Appropriate public wording
+"Entrepreneurs may act without complete prediction",Sarasvathy 2001; Kerr et al 2014,Theoretical and conceptual,Exact reversible-specific evidence threshold,Design premise informed by prior theory
+"Staged commitments help manage downside",McGrath 1999; McDonald & Eisenhardt 2020,Conceptual and qualitative,Population-wide causal effect of Canvas staging,Design mechanism to be evaluated
+"Scientific hypothesis testing can improve decision precision",Camuffo et al 2020,Randomised venture experiment outside UK,Canvas-specific comparative benefit,Empirical motivation for precise evidence checks
+"Precommitted exit triggers may resist escalation",Staw 1976,Mechanism and experimental literature,Actual adherence to triggers in venture teams,Hypothesised behavioural safeguard
+"The design artefact should be independently evaluated",Hevner et al 2004; Autio et al 2026,Design research framework,Validated effectiveness of specific Canvas,Research and evaluation agenda
+"25/25/20/15/15",Project research prototype,Uncalibrated candidate parameters,Empirical / value weights and stability,Illustrative candidate weights only
+"5851547 unique company numbers",Stage2 uploaded stats.json and report,Local reproducible preprocessing summary,Current active coverage and external registry reconciliation,Company master built from user's local Stage2 inputs
+"234570 supplier association matches",Stage2 uploaded stats.json and report,Exact identifier-linked observations,Deduplicated contract events and adverse outcomes,Identifier-matched associations not venture decision episodes
+"15 extra ZIPs integrated",Additional Data Audit ZIP metadata,Structure-only audit,Parsed data and company linkage,Additional ZIPs audited but not fully integrated
+"The tool improves entrepreneurs' decisions",Future comparative study proposal,No outcome evidence yet,Randomized / field decision utility,Proposed benefit to be tested
+"LLM supports automated verified evidence",Future architecture only,Not implemented in offline prototype,Human validation and model performance,Future AI-assisted candidate extraction with source review
