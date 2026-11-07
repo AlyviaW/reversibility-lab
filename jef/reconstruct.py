@@ -44,21 +44,25 @@ g=e.groupby("comp").agg(
     first_date=("filed_at","min"),last_date=("filed_at","max")
 ).reset_index()
 orph=g[g.nD==0].copy()
-bycik={c:sub.copy() for c,sub in g[g.cik!=""].groupby("cik")}
+from bisect import bisect_left, bisect_right
+# Pre-sort component end dates by CIK for fast 365-day predecessor lookup.
+bycik={}
+for cik,sub in g[g.cik!=""].groupby("cik"):
+    items=sorted([(pd.Timestamp(r.last_date), int(r.comp)) for _,r in sub.iterrows()])
+    bycik[cik]=items
 rows=[]
 for _,r in orph.iterrows():
-    cand=bycik.get(r.cik)
-    if cand is None:
-        cs=pd.DataFrame()
-    else:
-        cs=cand[(cand["comp"]!=r["comp"]) & (cand["last_date"]<r["first_date"])].copy()
-        cs["gap"]=(r["first_date"]-cs["last_date"]).dt.days
-        cs=cs[(cs.gap>=0)&(cs.gap<=365)]
+    items=bycik.get(r.cik,[])
+    dates=[x[0] for x in items]
+    lo=pd.Timestamp(r.first_date)-pd.Timedelta(days=365)
+    hi=pd.Timestamp(r.first_date)-pd.Timedelta(microseconds=1)
+    a=bisect_left(dates,lo); b=bisect_right(dates,hi)
+    cs=[x for x in items[a:b] if x[1]!=int(r.comp)]
     rows.append({
       "comp":int(r.comp),"cik":r.cik,"first_date":str(r.first_date.date()),
-      "candidate_count_365":int(len(cs)),
-      "candidate_comps":";".join(map(str,cs.comp.tolist())) if len(cs) else "",
-      "candidate_gaps":";".join(map(str,cs.gap.tolist())) if len(cs) else ""
+      "candidate_count_365":len(cs),
+      "candidate_comps":";".join(str(x[1]) for x in cs),
+      "candidate_gaps":";".join(str((pd.Timestamp(r.first_date)-x[0]).days) for x in cs)
     })
 R=pd.DataFrame(rows)
 summary={
