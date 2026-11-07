@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -q pandas pyarrow
+      - run: pip install -q pandas pyarrow openpyxl statsmodels scipy matplotlib
       - name: Run reconstruction diagnostics
         run: python jef/reconstruct.py
       - uses: actions/upload-artifact@v4
