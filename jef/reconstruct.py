@@ -1,4 +1,4 @@
-import io, os, re, json, zipfile, urllib.request, time, pathlib
+import io, os, re, json, zipfile, urllib.request
 from pathlib import Path
 import pandas as pd
 
@@ -7,84 +7,89 @@ RAW.mkdir(parents=True,exist_ok=True); OUT.mkdir(parents=True,exist_ok=True)
 UA={"User-Agent":"JEF-RR-replication/1.0"}
 
 def fetch(url,path):
-    if path.exists() and path.stat().st_size>0: return
+    if path.exists() and path.stat().st_size>0:return
     req=urllib.request.Request(url,headers=UA)
-    with urllib.request.urlopen(req,timeout=120) as r, open(path,"wb") as f:
+    with urllib.request.urlopen(req,timeout=180) as r, open(path,"wb") as f:
         while True:
             b=r.read(1024*1024)
-            if not b: break
+            if not b:break
             f.write(b)
 
-# Zenodo record inventory
 req=urllib.request.Request("https://zenodo.org/api/records/24042058",headers=UA)
-with urllib.request.urlopen(req,timeout=60) as r:
-    rec=json.load(r)
+with urllib.request.urlopen(req,timeout=60) as r: rec=json.load(r)
 files={f["key"]:f["links"]["self"] for f in rec.get("files",[])}
 
-quarters=[(y,q) for y in range(2016,2026) for q in range(1,5)] + [(2026,1),(2026,2)]
+quarters=[(y,q) for y in range(2016,2026) for q in range(1,5)]+[(2026,1),(2026,2)]
+frames=[]
 missing=[]
-present=[]
 for y,q in quarters:
     canonical=f"{y}q{q}_d.zip"
     matches=[k for k in files if re.fullmatch(fr"{y}q{q}_d(?: \(1\))?\.zip",k)]
     if not matches:
-        missing.append(canonical); continue
-    key=matches[0]
-    path=RAW/canonical
-    fetch(files[key],path)
-    present.append((canonical,key,path.stat().st_size))
-    print("ZENODO",canonical,"<-",key,path.stat().st_size)
-
-# Count raw submission rows and submission type in available quarters
-summary={"zenodo_present":len(present),"missing":missing}
-all_sub=[]
-for canonical,key,_ in present:
-    p=RAW/canonical
+        missing.append(f"{y}Q{q}"); continue
+    p=RAW/canonical; fetch(files[matches[0]],p)
     with zipfile.ZipFile(p) as z:
-        names=z.namelist()
-        member=next(n for n in names if n.upper().split("/")[-1]=="FORMDSUBMISSION.TSV")
-        with z.open(member) as f:
-            s=pd.read_csv(f,sep="\t",dtype=str,keep_default_na=False,low_memory=False)
-        s["SOURCE_Q"]=canonical[:6].upper()
-        all_sub.append(s)
-S=pd.concat(all_sub,ignore_index=True)
-stype=next(c for c in S.columns if c.upper()=="SUBMISSIONTYPE")
-summary["zenodo_rows"]=int(len(S))
-summary["zenodo_types"]={str(k):int(v) for k,v in S[stype].value_counts(dropna=False).items()}
-summary["target_total"]=538768
-summary["target_original"]=334780
-summary["target_amendments"]=203988
-summary["required_missing_rows"]=538768-len(S)
-summary["required_missing_D"]=334780-int((S[stype]=="D").sum())
-summary["required_missing_DA"]=203988-int((S[stype]=="D/A").sum())
+        n=next(n for n in z.namelist() if n.upper().split("/")[-1]=="FORMDSUBMISSION.TSV")
+        with z.open(n) as f:s=pd.read_csv(f,sep="\t",dtype=str,keep_default_na=False,low_memory=False)
+    cols={c.upper():c for c in s.columns}
+    x=s[[cols["ACCESSIONNUMBER"],cols["SUBMISSIONTYPE"],cols["PREVIOUSACCESSIONNUMBER"]]].copy()
+    x.columns=["accession","submission_type","previous_accession"]
+    x["quarter"]=f"{y}Q{q}"
+    frames.append(x)
 
-# Download public full longitudinal release, used ONLY to inspect the two missing official quarters
+# Missing official quarters from independently reconstructed full SEC stream.
 release=ROOT/"formd-tier1-M-2026-08-05.zip"
 fetch("https://github.com/wookat/dataforge-pipelines/releases/download/open-data-sec-form-d/formd-tier1-M-2026-08-05.zip",release)
-print("RELEASE",release.stat().st_size)
 with zipfile.ZipFile(release) as z:
-    names=z.namelist()
-    summary["release_members"]=names
-    pq=[n for n in names if n.endswith("formd_events.parquet")]
-    if not pq: pq=[n for n in names if n.endswith(".parquet") and "events" in n.lower()]
-    if pq:
-        z.extract(pq[0],ROOT)
-        ep=ROOT/pq[0]
-        e=pd.read_parquet(ep)
-        summary["release_columns"]=list(e.columns)
-        qcol="quarter" if "quarter" in e.columns else None
-        tcol="submission_type" if "submission_type" in e.columns else None
-        if qcol:
-            patch=e[e[qcol].isin(["2025Q2","2025Q4"])].copy()
-            summary["mirror_missing_rows"]=int(len(patch))
-            summary["mirror_by_quarter"]={str(k):int(v) for k,v in patch[qcol].value_counts().items()}
-            if tcol:
-                summary["mirror_types"]={str(k):int(v) for k,v in patch[tcol].value_counts().items()}
-                summary["combined_rows"]=int(len(S)+len(patch))
-                summary["combined_D"]=int((S[stype]=="D").sum()+(patch[tcol]=="D").sum())
-                summary["combined_DA"]=int((S[stype]=="D/A").sum()+(patch[tcol]=="D/A").sum())
-                summary["exact_total_match"]=summary["combined_rows"]==538768
-                summary["exact_type_match"]=summary["combined_D"]==334780 and summary["combined_DA"]==203988
+    n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"))
+    z.extract(n,ROOT)
+    e=pd.read_parquet(ROOT/n,columns=["accession","submission_type","previous_accession","quarter","issuer_cik"])
+patch=e[e["quarter"].isin(missing)].copy()
+frames.append(patch[["accession","submission_type","previous_accession","quarter"]])
 
-json.dump(summary,open(OUT/"stage1-count-check.json","w"),indent=2,default=str)
-print(json.dumps(summary,indent=2,default=str))
+S=pd.concat(frames,ignore_index=True)
+for c in ["accession","previous_accession","submission_type"]: S[c]=S[c].fillna("").astype(str)
+S=S.drop_duplicates("accession",keep="last").reset_index(drop=True)
+idx={a:i for i,a in enumerate(S.accession)}
+parent=list(range(len(S))); rank=[0]*len(S)
+def find(x):
+    while parent[x]!=x:
+        parent[x]=parent[parent[x]]; x=parent[x]
+    return x
+def union(a,b):
+    ra,rb=find(a),find(b)
+    if ra==rb:return False
+    if rank[ra]<rank[rb]:ra,rb=rb,ra
+    parent[rb]=ra
+    if rank[ra]==rank[rb]:rank[ra]+=1
+    return True
+linked=0; orphan=0; selflinks=0; cycles=0
+for i,r in S.iterrows():
+    p=r.previous_accession.strip()
+    if not p:continue
+    j=idx.get(p)
+    if j is None:
+        orphan+=1;continue
+    if j==i:selflinks+=1;continue
+    if find(i)==find(j):
+        cycles+=1
+    else:
+        union(i,j); linked+=1
+roots=[find(i) for i in range(len(S))]
+components=len(set(roots))
+# amendment-specific orphan count
+am=S[S.submission_type=="D/A"]
+orph_am=sum(1 for p in am.previous_accession if p.strip() and p.strip() not in idx)
+blank_prev_am=sum(1 for p in am.previous_accession if not p.strip())
+
+summary={
+ "rows":len(S),"D":int((S.submission_type=="D").sum()),"DA":int((S.submission_type=="D/A").sum()),
+ "linked_edges":linked,"components_all":components,"target_reported_chains":349285,
+ "difference_components_vs_target":components-349285,
+ "orphan_previous_all":orphan,"orphan_amendments":orph_am,"blank_previous_amendments":blank_prev_am,
+ "self_links":selflinks,"cycle_edges":cycles
+}
+json.dump(summary,open(OUT/"stage2-chain-check.json","w"),indent=2)
+print(json.dumps(summary,indent=2))
+# save accession graph compactly for next stage
+S.to_csv(OUT/"submission-linkage.csv.gz",index=False,compression="gzip")
