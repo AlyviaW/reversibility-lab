@@ -1,4 +1,4 @@
-import json,zipfile,urllib.request
+import json,zipfile,urllib.request,collections
 from pathlib import Path
 import pandas as pd
 ROOT=Path("jef-run"); OUT=ROOT/"output"; OUT.mkdir(parents=True,exist_ok=True)
@@ -16,40 +16,51 @@ fetch("https://github.com/wookat/dataforge-pipelines/releases/download/open-data
 with zipfile.ZipFile(release) as z:
     n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"))
     z.extract(n,ROOT)
-    e=pd.read_parquet(ROOT/n,columns=["accession","quarter","submission_type","previous_accession","issuer_cik"])
-e=e[e.quarter<="2026Q2"].copy().drop_duplicates("accession",keep="last")
-for c in ["accession","previous_accession"]:e[c]=e[c].fillna("").astype(str)
+    e=pd.read_parquet(ROOT/n,columns=["accession","quarter","previous_accession"])
+e=e[e.quarter<="2026Q2"].copy().drop_duplicates("accession",keep="last").reset_index(drop=True)
+e["accession"]=e.accession.fillna("").astype(str); e["previous_accession"]=e.previous_accession.fillna("").astype(str)
+idx={a:i for i,a in enumerate(e.accession)}
+children=collections.defaultdict(list)
+for i,p in enumerate(e.previous_accession):
+    if p in idx: children[idx[p]].append(i)
 
-def calc(start):
-    h=e[e.quarter>=start].copy().reset_index(drop=True)
-    idx={a:i for i,a in enumerate(h.accession)}
-    parent=list(range(len(h)));rank=[0]*len(h)
-    def find(x):
-        while parent[x]!=x:
-            parent[x]=parent[parent[x]];x=parent[x]
-        return x
-    def union(a,b):
-        ra,rb=find(a),find(b)
-        if ra==rb:return
-        if rank[ra]<rank[rb]:ra,rb=rb,ra
-        parent[rb]=ra
-        if rank[ra]==rank[rb]:rank[ra]+=1
-    for i,r in h.iterrows():
-        p=r.previous_accession.strip()
-        if p in idx:union(i,idx[p])
-    roots=[find(i) for i in range(len(h))]
-    h["root"]=roots
-    w=h[(h.quarter>="2016Q1")&(h.quarter<="2026Q2")]
-    return len(set(w.root))
+N=len(e); parent=list(range(N)); rank=[0]*N; active=[False]*N; haswin=[False]*N
+wincomp=0
+def find(x):
+    while parent[x]!=x:
+        parent[x]=parent[parent[x]];x=parent[x]
+    return x
+def union(a,b):
+    global wincomp
+    ra,rb=find(a),find(b)
+    if ra==rb:return
+    wa,wb=haswin[ra],haswin[rb]
+    if rank[ra]<rank[rb]:ra,rb=rb,ra;wa,wb=wb,wa
+    # merging two components that both contain window observations reduces represented components by 1
+    if wa and wb: wincomp-=1
+    parent[rb]=ra; haswin[ra]=wa or wb
+    if rank[ra]==rank[rb]:rank[ra]+=1
 
-starts=[]
-for y in range(2008,2017):
-    for q in range(1,5):
-        s=f"{y}Q{q}"
-        if s>"2016Q1":continue
-        starts.append(s)
-res={s:calc(s) for s in starts}
-closest=sorted(res.items(),key=lambda kv:abs(kv[1]-349285))[:20]
-summary={"target":349285,"closest":closest,"all":res}
+# activate by descending quarter. Record count after all nodes >= start are active.
+quarters=sorted(e.quarter.unique(),reverse=True)
+res={}
+for q in quarters:
+    ids=e.index[e.quarter==q].tolist()
+    # activate nodes first
+    for i in ids:
+        active[i]=True
+        if "2016Q1"<=e.at[i,"quarter"]<="2026Q2":
+            haswin[i]=True;wincomp+=1
+    # union each added node to active parent and active children
+    for i in ids:
+        p=e.at[i,"previous_accession"]; j=idx.get(p)
+        if j is not None and active[j]:union(i,j)
+        for ch in children.get(i,[]):
+            if active[ch]:union(i,ch)
+    if q<="2016Q1":
+        res[q]=wincomp
+
+closest=sorted(res.items(),key=lambda kv:abs(kv[1]-349285))[:30]
+summary={"target":349285,"closest":closest,"counts_by_history_start":res}
 json.dump(summary,open(OUT/"stage2-cutoff-sweep.json","w"),indent=2)
 print(json.dumps({"target":349285,"closest":closest},indent=2))
