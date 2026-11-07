@@ -1,49 +1,23 @@
-name: JEF Rerun Inventory
-
+name: JEF Rerun Reconstruction
 on:
   push:
-    branches:
-      - jef-rerun-20261107
-
+    branches: [jef-rerun-20261107]
 permissions:
   contents: read
-
 jobs:
-  inventory:
+  reconstruct:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Fetch Zenodo inventory
-        run: |
-          python - <<'PY'
-          import json, urllib.request, pathlib
-          record_id = "24042058"
-          req = urllib.request.Request(
-              f"https://zenodo.org/api/records/{record_id}",
-              headers={"User-Agent":"JEF-RR-replication/1.0"}
-          )
-          with urllib.request.urlopen(req, timeout=60) as r:
-              meta=json.load(r)
-          pathlib.Path("jef-output").mkdir(exist_ok=True)
-          pathlib.Path("jef-output/zenodo-record.json").write_text(json.dumps(meta, indent=2))
-          rows=[]
-          for f in meta.get("files",[]):
-              rows.append({
-                  "key":f.get("key"),
-                  "size":f.get("size"),
-                  "checksum":f.get("checksum"),
-                  "download":f.get("links",{}).get("self") or f.get("links",{}).get("download")
-              })
-          pathlib.Path("jef-output/file-inventory.json").write_text(json.dumps(rows, indent=2))
-          print("TITLE:", meta.get("metadata",{}).get("title"))
-          print("FILES:", len(rows))
-          for x in rows: print(x["key"], x["size"], x["checksum"], x["download"])
-          PY
+      - run: pip install -q pandas pyarrow
+      - name: Run reconstruction diagnostics
+        run: python jef/reconstruct.py
       - uses: actions/upload-artifact@v4
         with:
-          name: jef-zenodo-inventory
-          path: jef-output/
+          name: jef-reconstruction-stage1
+          path: jef-run/output/
+          retention-days: 90
