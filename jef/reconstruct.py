@@ -39,44 +39,36 @@ e["comp"]=[find(i) for i in range(len(e))]
 g=e.groupby("comp").agg(
     n=("accession","size"),
     nD=("submission_type",lambda x:int((x=="D").sum())),
-    nDA=("submission_type",lambda x:int((x=="D/A").sum())),
     cik=("issuer_cik",lambda x:next((v for v in x if v), "")),
     cik_n=("issuer_cik",lambda x:len(set(v for v in x if v))),
-    first_date=("filed_at","min"),
-    last_date=("filed_at","max")
+    first_date=("filed_at","min"),last_date=("filed_at","max")
 ).reset_index()
 orph=g[g.nD==0].copy()
-normal=g[g.nD>0].copy()
-# same-CIK existence in another component
-cik_groups=g[g.cik!=""].groupby("cik").comp.apply(list).to_dict()
-orph["same_cik_other"]=orph.apply(lambda r: len(cik_groups.get(r.cik,[]))>1,axis=1)
-# specifically any earlier component same CIK
-meta=g.set_index("comp")
-def earlier_candidate(r):
-    comps=[c for c in cik_groups.get(r.cik,[]) if c!=r.comp]
-    return [c for c in comps if meta.loc[c,"last_date"] < r.first_date]
-orph["has_earlier_same_cik"]=orph.apply(lambda r:len(earlier_candidate(r))>0,axis=1)
-# nearest earlier component gap
-def gapdays(r):
-    cs=earlier_candidate(r)
-    if not cs:return None
-    last=max(meta.loc[c,"last_date"] for c in cs)
-    return (r.first_date-last).days
-orph["gap_days"]=orph.apply(gapdays,axis=1)
+bycik={c:sub.copy() for c,sub in g[g.cik!=""].groupby("cik")}
+rows=[]
+for _,r in orph.iterrows():
+    cand=bycik.get(r.cik)
+    if cand is None:
+        cs=pd.DataFrame()
+    else:
+        cs=cand[(cand["comp"]!=r["comp"]) & (cand["last_date"]<r["first_date"])].copy()
+        cs["gap"]=(r["first_date"]-cs["last_date"]).dt.days
+        cs=cs[(cs.gap>=0)&(cs.gap<=365)]
+    rows.append({
+      "comp":int(r.comp),"cik":r.cik,"first_date":str(r.first_date.date()),
+      "candidate_count_365":int(len(cs)),
+      "candidate_comps":";".join(map(str,cs.comp.tolist())) if len(cs) else "",
+      "candidate_gaps":";".join(map(str,cs.gap.tolist())) if len(cs) else ""
+    })
+R=pd.DataFrame(rows)
 summary={
- "components_accession_only":len(g),
- "orphan_components_no_D":len(orph),
- "components_with_D":len(normal),
- "orphan_with_same_cik_other_component":int(orph.same_cik_other.sum()),
- "orphan_with_earlier_same_cik_component":int(orph.has_earlier_same_cik.sum()),
- "target_merges_needed":len(g)-349285,
- "target_orphan_components_remaining":349285-len(normal),
- "orphans_by_gap_le_30":int((orph.gap_days<=30).fillna(False).sum()),
- "orphans_by_gap_le_90":int((orph.gap_days<=90).fillna(False).sum()),
- "orphans_by_gap_le_365":int((orph.gap_days<=365).fillna(False).sum()),
- "orphans_by_gap_any":int(orph.gap_days.notna().sum()),
- "multi_cik_accession_components":int((g.cik_n>1).sum())
+ "accession_components":len(g),"orphan_components":len(orph),
+ "orphans_with_at_least_one_365_candidate":int((R.candidate_count_365>=1).sum()),
+ "orphans_with_exactly_one_365_candidate":int((R.candidate_count_365==1).sum()),
+ "orphans_with_multiple_365_candidates":int((R.candidate_count_365>1).sum()),
+ "components_after_unique_365_links":int(len(g)-(R.candidate_count_365==1).sum()),
+ "target_chains":349285,"target_ambiguous_chains":10
 }
-json.dump(summary,open(OUT/"stage2-cik-resolution.json","w"),indent=2)
-orph.to_csv(OUT/"orphan-components.csv",index=False)
+json.dump(summary,open(OUT/"stage2-resolution-rule.json","w"),indent=2)
+R[R.candidate_count_365>0].to_csv(OUT/"resolved-or-ambiguous-orphans.csv",index=False)
 print(json.dumps(summary,indent=2))
