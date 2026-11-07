@@ -75,5 +75,19 @@ for c in ["Investing","REITS and Finance","Commercial Banking"]:
     sub=base[base.industry_group==c]
     out[c+"_entities"]=sub.entity_type.value_counts().to_dict()
     out[c+"_sample_names"]=sub.issuer_name.head(100).tolist()
+
+# Candidate identifiable-vehicle add-ons beyond industry_group == Investing
+inv=(base.industry_group=="Investing")
+cand={
+ "investing_only":inv,
+ "investing_or_spv":inv | base.issuer_name.str.contains(r"\\bSPV\\b|SPECIAL PURPOSE",case=False,regex=True,na=False),
+ "investing_or_investment_banking":inv | (base.industry_group=="Investment Banking"),
+ "investing_or_business_trust":inv | (base.entity_type=="Business Trust"),
+ "investing_or_fund_name":inv | base.issuer_name.str.contains(r"\\bFUNDS?\\b",case=False,regex=True,na=False),
+ "investing_or_investment_name":inv | base.issuer_name.str.contains(r"\\bINVEST(MENT|MENTS|ING)?\\b",case=False,regex=True,na=False),
+ "investing_or_spv_or_investment_banking":inv | base.issuer_name.str.contains(r"\\bSPV\\b|SPECIAL PURPOSE",case=False,regex=True,na=False) | (base.industry_group=="Investment Banking"),
+}
+for k,m in cand.items():
+    out[k+"_remove"]=int(m.sum());out[k+"_remain"]=int((~m).sum())
 json.dump(out,open(OUT/"stage4b-fund-screen.json","w"),indent=2)
 print(json.dumps({k:v for k,v in out.items() if not k.endswith("sample_names")},indent=2))
