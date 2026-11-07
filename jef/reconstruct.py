@@ -1,93 +1,97 @@
-import json,zipfile,urllib.request,re
+import json, zipfile, urllib.request, re
 from pathlib import Path
+from itertools import combinations
 import pandas as pd, numpy as np
-ROOT=Path("jef-run");OUT=ROOT/"output";OUT.mkdir(parents=True,exist_ok=True)
+
+ROOT=Path("jef-run"); OUT=ROOT/"output"; OUT.mkdir(parents=True,exist_ok=True)
 UA={"User-Agent":"JEF-RR-replication/1.0"}
 def fetch(url,p):
     if p.exists() and p.stat().st_size>0:return
     with urllib.request.urlopen(urllib.request.Request(url,headers=UA),timeout=240) as r,open(p,"wb") as f:
-        while (b:=r.read(1048576)):f.write(b)
-zpath=ROOT/"f.zip";fetch("https://github.com/wookat/dataforge-pipelines/releases/download/open-data-sec-form-d/formd-tier1-M-2026-08-05.zip",zpath)
+        while True:
+            b=r.read(1048576)
+            if not b: break
+            f.write(b)
+
+zpath=ROOT/"f.zip"
+fetch("https://github.com/wookat/dataforge-pipelines/releases/download/open-data-sec-form-d/formd-tier1-M-2026-08-05.zip",zpath)
 with zipfile.ZipFile(zpath) as z:
-    n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"));z.extract(n,ROOT)
-cols=["accession","filed_at","quarter","previous_accession","issuer_cik","issuer_name","state","industry_group","investment_fund_type","is_pooled_investment_fund","entity_type","total_amount_sold_usd"]
+    n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"))
+    z.extract(n,ROOT)
+
+cols=["accession","filed_at","quarter","previous_accession","issuer_cik","issuer_name","state",
+      "industry_group","investment_fund_type","is_pooled_investment_fund","entity_type",
+      "total_amount_sold_usd","year_of_incorporation","is_equity"]
 e=pd.read_parquet(ROOT/n,columns=cols)
 e=e[(e.quarter>="2016Q1")&(e.quarter<="2026Q2")].drop_duplicates("accession").reset_index(drop=True)
-for c in ["accession","previous_accession","issuer_cik","issuer_name","state","industry_group","investment_fund_type","entity_type"]:e[c]=e[c].fillna("").astype(str)
-e["filed_at"]=pd.to_datetime(e.filed_at);e["sold"]=pd.to_numeric(e.total_amount_sold_usd,errors="coerce")
-idx={a:i for i,a in enumerate(e.accession)};N=len(e);par=list(range(N))
+for c in ["accession","previous_accession","issuer_cik","issuer_name","state","industry_group","investment_fund_type","entity_type","year_of_incorporation"]:
+    e[c]=e[c].fillna("").astype(str)
+e["filed_at"]=pd.to_datetime(e.filed_at)
+e["sold"]=pd.to_numeric(e.total_amount_sold_usd,errors="coerce")
+
+idx={a:i for i,a in enumerate(e.accession)}
+N=len(e); par=list(range(N)); rank=[0]*N
 def find(x):
-    while par[x]!=x:par[x]=par[par[x]];x=par[x]
+    while par[x]!=x:
+        par[x]=par[par[x]]; x=par[x]
     return x
 def union(a,b):
     a,b=find(a),find(b)
-    if a!=b:par[b]=a
+    if a==b:return
+    if rank[a]<rank[b]:a,b=b,a
+    par[b]=a
+    if rank[a]==rank[b]:rank[a]+=1
 for i,p in enumerate(e.previous_accession):
-    j=idx.get(p)
-    if p and j is not None:union(i,j)
+    if p:
+        j=idx.get(p)
+        if j is not None: union(i,j)
 e["root"]=[find(i) for i in range(N)]
-fp=e[e.sold>0].sort_values("filed_at").drop_duplicates("root").sort_values("filed_at").drop_duplicates("issuer_cik")
-fp=fp[(fp.issuer_cik!="")&(fp.filed_at>="2019-01-01")]
-US=set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split())
+
+fp=e[e.sold>0].sort_values("filed_at").drop_duplicates("root")
+fp=fp[fp.issuer_cik!=""].sort_values("filed_at").drop_duplicates("issuer_cik")
+fp=fp[fp.filed_at>=pd.Timestamp("2019-01-01")].copy()
+US=set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split())
 u=fp[fp.state.isin(US)].copy()
 pooled=u.is_pooled_investment_fund.fillna(False).astype(bool)
 base=u[(~pooled)&u.industry_group.str.lower().ne("pooled investment fund")].copy()
-patterns={
- "fund":r"\bfunds?\b",
- "investment":r"\binvest(ment|ments|ing)?\b",
- "capital":r"\bcapital\b",
- "ventures":r"\bventures?\b",
- "holdings":r"\bholdings?\b",
- "partners":r"\bpartners?\b",
- "asset":r"\bassets?\b",
- "portfolio":r"\bportfolio\b",
- "spv":r"\bspv\b|special purpose",
- "roman_lp":r"\b[IVX]{1,5}\b.*\b(LP|L\.P\.)\b"
-}
-out={"base":len(base),"target":61928,"remove_needed":len(base)-61928,
-     "industry":base.industry_group.value_counts().to_dict(),
-     "entity":base.entity_type.value_counts().to_dict()}
-for k,p in patterns.items():
-    out["name_"+k]=int(base.issuer_name.str.contains(p,case=False,regex=True,na=False).sum())
-# cumulative plausible vehicle token sets
-sets={
- "fund_investment": ["fund","investment"],
- "fund_investment_capital":["fund","investment","capital"],
- "fund_investment_capital_holdings":["fund","investment","capital","holdings"],
- "all_vehicle":["fund","investment","capital","ventures","holdings","partners","asset","portfolio","spv","roman_lp"]
-}
-for k,ks in sets.items():
-    m=pd.Series(False,index=base.index)
-    for x in ks:m|=base.issuer_name.str.contains(patterns[x],case=False,regex=True,na=False)
-    out[k]=int(m.sum());out[k+"_remain"]=int((~m).sum())
-# category combinations from obvious financial vehicle classes
-cats=["Investing","REITS and Finance","Commercial Banking","Other Banking and Financial Services","Insurance"]
-for c in cats:out["cat_"+c]=int((base.industry_group==c).sum())
-# all subsets of those categories
-from itertools import combinations
-for r in range(1,len(cats)+1):
-  for cs in combinations(cats,r):
-    n=int(base.industry_group.isin(cs).sum())
-    if abs((len(base)-n)-61928)<=800:
-      out["subset_"+"+".join(cs)]={"remove":n,"remain":len(base)-n}
-# cross-tabs for Investing and REITS/Finance
-for c in ["Investing","REITS and Finance","Commercial Banking"]:
-    sub=base[base.industry_group==c]
-    out[c+"_entities"]=sub.entity_type.value_counts().to_dict()
-    out[c+"_sample_names"]=sub.issuer_name.head(100).tolist()
 
-# Candidate identifiable-vehicle add-ons beyond industry_group == Investing
-inv=(base.industry_group=="Investing")
-cand={
- "investing_only":inv,
- "investing_or_spv":inv | base.issuer_name.str.contains(r"\\bSPV\\b|SPECIAL PURPOSE",case=False,regex=True,na=False),
- "investing_or_investment_banking":inv | (base.industry_group=="Investment Banking"),
- "investing_or_business_trust":inv | (base.entity_type=="Business Trust"),
- "investing_or_fund_name":inv | base.issuer_name.str.contains(r"\\bFUNDS?\\b",case=False,regex=True,na=False),
- "investing_or_investment_name":inv | base.issuer_name.str.contains(r"\\bINVEST(MENT|MENTS|ING)?\\b",case=False,regex=True,na=False),
- "investing_or_spv_or_investment_banking":inv | base.issuer_name.str.contains(r"\\bSPV\\b|SPECIAL PURPOSE",case=False,regex=True,na=False) | (base.industry_group=="Investment Banking"),
+inc=pd.to_numeric(base.year_of_incorporation,errors="coerce")
+young=(base.filed_at.dt.year-inc).between(0,5)
+eq=base.is_equity.fillna(False).astype(bool)
+
+atoms={
+ "industry Investing":base.industry_group.eq("Investing"),
+ "industry Investment Banking":base.industry_group.eq("Investment Banking"),
+ "industry REITS and Finance":base.industry_group.eq("REITS and Finance"),
+ "industry Commercial Banking":base.industry_group.eq("Commercial Banking"),
+ "name SPV":base.issuer_name.str.contains(r"\bSPV\b|SPECIAL PURPOSE",case=False,regex=True,na=False),
+ "name sidecar":base.issuer_name.str.contains(r"\bSIDECAR\b",case=False,regex=True,na=False),
+ "name feeder":base.issuer_name.str.contains(r"\bFEEDER\b",case=False,regex=True,na=False),
+ "name co-invest":base.issuer_name.str.contains(r"CO[- ]?INVEST",case=False,regex=True,na=False),
+ "name fund":base.issuer_name.str.contains(r"\bFUNDS?\b",case=False,regex=True,na=False),
+ "name investment":base.issuer_name.str.contains(r"\bINVEST(MENT|MENTS|ING)?\b",case=False,regex=True,na=False),
+ "name capital":base.issuer_name.str.contains(r"\bCAPITAL\b",case=False,regex=True,na=False),
+ "name holdings":base.issuer_name.str.contains(r"\bHOLDINGS?\b",case=False,regex=True,na=False),
+ "name partners":base.issuer_name.str.contains(r"\bPARTNERS?\b",case=False,regex=True,na=False),
+ "entity Business Trust":base.entity_type.eq("Business Trust"),
 }
-for k,m in cand.items():
-    out[k+"_remove"]=int(m.sum());out[k+"_remain"]=int((~m).sum())
-json.dump(out,open(OUT/"stage4b-fund-screen.json","w"),indent=2)
-print(json.dumps({k:v for k,v in out.items() if not k.endswith("sample_names")},indent=2))
+T=(61928,55874,46875)
+ranked=[]
+keys=list(atoms)
+for rsz in range(1,5):
+    for ks in combinations(keys,rsz):
+        m=pd.Series(False,index=base.index)
+        for k in ks:m |= atoms[k]
+        keep=~m
+        vals=(int(keep.sum()),int((keep&young).sum()),int((keep&young&eq).sum()))
+        score=sum(abs(vals[i]-T[i]) for i in range(3))
+        ranked.append((score,ks,vals,int(m.sum())))
+ranked.sort(key=lambda x:x[0])
+
+out={
+ "base_counts":[int(len(base)),int(young.sum()),int((young&eq).sum())],
+ "target":T,
+ "best":[{"score":x[0],"flags":list(x[1]),"counts":list(x[2]),"removed":x[3]} for x in ranked[:60]]
+}
+json.dump(out,open(OUT/"stage4c-joint-screen-search.json","w"),indent=2)
+print(json.dumps(out,indent=2))
