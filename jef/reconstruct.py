@@ -17,57 +17,49 @@ with zipfile.ZipFile(release) as z:
     n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"))
     z.extract(n,ROOT)
     e=pd.read_parquet(ROOT/n,columns=["accession","filed_at","quarter","submission_type","previous_accession","issuer_cik"])
-e=e[(e.quarter>="2016Q1")&(e.quarter<="2026Q2")].copy()
-e=e.drop_duplicates("accession",keep="last").reset_index(drop=True)
+e=e[e.quarter<="2026Q2"].copy().drop_duplicates("accession",keep="last").reset_index(drop=True)
 for c in ["accession","previous_accession"]:e[c]=e[c].fillna("").astype(str)
 e["issuer_cik"]=e["issuer_cik"].fillna("").astype(str)
 idx={a:i for i,a in enumerate(e.accession)}
-cik=dict(zip(e.accession,e.issuer_cik))
-
-def components(skip_mismatch=False):
-    parent=list(range(len(e)));rank=[0]*len(e)
-    def find(x):
-        while parent[x]!=x:
-            parent[x]=parent[parent[x]];x=parent[x]
-        return x
-    def union(a,b):
-        ra,rb=find(a),find(b)
-        if ra==rb:return False
-        if rank[ra]<rank[rb]:ra,rb=rb,ra
-        parent[rb]=ra
-        if rank[ra]==rank[rb]:rank[ra]+=1
-        return True
-    orphan=0;mismatch=[];cycles=0;linked=0
-    for i,r in e.iterrows():
-        p=r.previous_accession.strip()
-        if not p:continue
-        j=idx.get(p)
-        if j is None:
-            orphan+=1;continue
-        bad=(r.issuer_cik and cik.get(p,"") and r.issuer_cik!=cik[p])
-        if bad:
-            mismatch.append((r.accession,p,r.issuer_cik,cik[p]))
-            if skip_mismatch:continue
-        if find(i)==find(j):cycles+=1
-        else:union(i,j);linked+=1
-    roots=[find(i) for i in range(len(e))]
-    return {"components":len(set(roots)),"linked":linked,"orphan":orphan,"cycles":cycles,"mismatch_edges":mismatch,"roots":roots}
-
-a=components(False); b=components(True)
-# identify full all-link components containing any mismatch edge
-bad_roots=set()
-for cur,prev,_,_ in a["mismatch_edges"]:
-    bad_roots.add(a["roots"][idx[cur]]);bad_roots.add(a["roots"][idx[prev]])
-n_bad_rows=sum(1 for r in a["roots"] if r in bad_roots)
-components_after_drop=a["components"]-len(bad_roots)
+parent=list(range(len(e)));rank=[0]*len(e)
+def find(x):
+    while parent[x]!=x:
+        parent[x]=parent[parent[x]];x=parent[x]
+    return x
+def union(a,b):
+    ra,rb=find(a),find(b)
+    if ra==rb:return False
+    if rank[ra]<rank[rb]:ra,rb=rb,ra
+    parent[rb]=ra
+    if rank[ra]==rank[rb]:rank[ra]+=1
+    return True
+orphans=[];cycles=0
+for i,r in e.iterrows():
+    p=r.previous_accession.strip()
+    if not p:continue
+    j=idx.get(p)
+    if j is None:orphans.append((r.accession,p,r.quarter));continue
+    if find(i)==find(j):cycles+=1
+    else:union(i,j)
+roots=[find(i) for i in range(len(e))]
+e["root"]=[roots[i] for i in range(len(e))]
+win=e[(e.quarter>="2016Q1")&(e.quarter<="2026Q2")].copy()
+# root components represented in analysis window
+win_roots=set(win.root)
+# CIK consistency evaluated across each represented full-history chain
+full_rep=e[e.root.isin(win_roots)].copy()
+cik_n=full_rep[full_rep.issuer_cik!=""].groupby("root").issuer_cik.nunique()
+bad_roots=set(cik_n[cik_n>1].index)
 summary={
- "rows":len(e),"D":int((e.submission_type=="D").sum()),"DA":int((e.submission_type=="D/A").sum()),
- "components_all_links":a["components"],"linked_all":a["linked"],"orphans":a["orphan"],"cycles_all":a["cycles"],
- "cik_mismatch_edges":len(a["mismatch_edges"]),"cik_mismatch_components":len(bad_roots),"rows_in_mismatch_components":n_bad_rows,
- "components_same_cik_only":b["components"],"linked_same_cik":b["linked"],"cycles_same_cik":b["cycles"],
- "components_after_dropping_mismatch_components":components_after_drop,
- "target_chains":349285
+ "full_history_rows_to_2026Q2":len(e),
+ "window_rows":len(win),"window_D":int((win.submission_type=="D").sum()),"window_DA":int((win.submission_type=="D/A").sum()),
+ "window_components_with_full_ancestry":len(win_roots),
+ "full_history_orphan_links":len(orphans),"full_history_cycles":cycles,
+ "cik_inconsistent_chains":len(bad_roots),
+ "window_components_after_dropping_cik_inconsistent":len(win_roots-bad_roots),
+ "target_chains":349285,"target_cik_inconsistent":10
 }
 json.dump(summary,open(OUT/"stage2-chain-check.json","w"),indent=2)
-pd.DataFrame(a["mismatch_edges"],columns=["accession","previous_accession","cik","previous_cik"]).to_csv(OUT/"cik-mismatch-edges.csv",index=False)
+pd.DataFrame(orphans,columns=["accession","previous_accession","quarter"]).to_csv(OUT/"full-history-orphans.csv",index=False)
+pd.DataFrame({"root":list(bad_roots)}).to_csv(OUT/"cik-inconsistent-roots.csv",index=False)
 print(json.dumps(summary,indent=2))
