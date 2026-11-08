@@ -60,8 +60,15 @@ sale=getcol(O,"SALE_DATE","DATEOFFIRSTSALE")
 print("KEYS",sa,st,fd,oa,prev,ia,cik,state,yr,entity,industry,fundtype,pooled,equity,debt,sold,target,investors,sale)
 
 # primary issuer = first row per accession in official table order
-I1=I.drop_duplicates(ia,keep="first")[[ia,cik,state,yr,entity]].copy()
-I1.columns=["accession","cik","state","yearinc","entity"]
+if yr is None:
+    print("RAW ISSUERS HAS NO MATCHING INCORPORATION-YEAR COLUMN; using mirror field with explicit provenance")
+    print("RAW ISSUERS COLUMNS:",list(I.columns))
+    I1=I.drop_duplicates(ia,keep="first")[[ia,cik,state,entity]].copy()
+    I1.columns=["accession","cik","state","entity"]
+    I1["yearinc"]=""
+else:
+    I1=I.drop_duplicates(ia,keep="first")[[ia,cik,state,yr,entity]].copy()
+    I1.columns=["accession","cik","state","yearinc","entity"]
 O1=O.drop_duplicates(oa,keep="first")[[oa,prev,industry,fundtype,pooled,equity,debt,sold,target,investors,sale]].copy()
 O1.columns=["accession","previous","industry","fundtype","pooled","equity","debt","sold","target","investors","sale_date"]
 B=S[[sa,st,fd,"SOURCE_QUARTER"]].copy()
@@ -101,6 +108,13 @@ P=pd.DataFrame({
  "entity":M.entity_type.fillna("").astype(str),
 })
 B=pd.concat([B,P],ignore_index=True).drop_duplicates("accession",keep="last").sort_values("filing_date").reset_index(drop=True)
+if yr is None:
+    # Mirror year data are labelled separately and must be independently verified before final sample reconstruction.
+    Y=M[["accession","year_of_incorporation"]].drop_duplicates("accession",keep="last").copy()
+    Y.columns=["accession","mirror_yearinc"]
+    B=B.merge(Y,on="accession",how="left",validate="one_to_one")
+    B["yearinc"]=B["yearinc"].where(B["yearinc"].str.strip().ne(""),B["mirror_yearinc"].fillna("").astype(str))
+    B=B.drop(columns="mirror_yearinc")
 assert len(B)==538768,(len(B),missing)
 
 # chain by explicit previous accession in analysis window
