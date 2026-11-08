@@ -58,6 +58,11 @@ pooled=getcol(O,"ISPOOLEDINVESTMENTFUNDTYPE"); equity=getcol(O,"ISEQUITYTYPE"); 
 sold=getcol(O,"TOTALAMOUNTSOLD"); target=getcol(O,"TOTALOFFERINGAMOUNT"); investors=getcol(O,"TOTALNUMBERALREADYINVESTED")
 sale=getcol(O,"SALE_DATE","DATEOFFIRSTSALE")
 print("KEYS",sa,st,fd,oa,prev,ia,cik,state,yr,entity,industry,fundtype,pooled,equity,debt,sold,target,investors,sale)
+missing_cols=[name for name,val in {"issuer_incorporation_year":yr,"pooled_indicator":pooled}.items() if val is None]
+print("UNMAPPED OFFICIAL FIELDS:",missing_cols)
+if pooled is None:
+    O["OFFICIAL_POOLED_FIELD_UNAVAILABLE"]=""
+    pooled="OFFICIAL_POOLED_FIELD_UNAVAILABLE"
 
 # primary issuer = first row per accession in official table order
 if yr is None:
@@ -86,6 +91,7 @@ fetch("https://github.com/wookat/dataforge-pipelines/releases/download/open-data
 with zipfile.ZipFile(rp) as z:
     n=next(n for n in z.namelist() if n.endswith("formd_events.parquet"));z.extract(n,RAW)
 M=pd.read_parquet(RAW/n)
+Mfull=M.copy()
 M=M[M.quarter.isin(missing)].copy()
 P=pd.DataFrame({
  "accession":M.accession.astype(str),
@@ -110,7 +116,7 @@ P=pd.DataFrame({
 B=pd.concat([B,P],ignore_index=True).drop_duplicates("accession",keep="last").sort_values("filing_date").reset_index(drop=True)
 if yr is None:
     # Mirror year data are labelled separately and must be independently verified before final sample reconstruction.
-    Y=M[["accession","year_of_incorporation"]].drop_duplicates("accession",keep="last").copy()
+    Y=Mfull[["accession","year_of_incorporation"]].drop_duplicates("accession",keep="last").copy()
     Y.columns=["accession","mirror_yearinc"]
     B=B.merge(Y,on="accession",how="left",validate="one_to_one")
     B["yearinc"]=B["yearinc"].where(B["yearinc"].str.strip().ne(""),B["mirror_yearinc"].fillna("").astype(str))
@@ -158,7 +164,7 @@ tests={
  "pool_plus_investing_invbank":masks["pooledflag"]|masks["pooled_industry"]|masks["fundtype"]|masks["investing"]|masks["investment_banking"],
  "pool_plus_investing_btrust":masks["pooledflag"]|masks["pooled_industry"]|masks["fundtype"]|masks["investing"]|masks["business_trust"],
 }
-out={"raw_rows":len(B),"first_positive_2019":len(fp),"us":len(u),"target_us":152898}
+out={"raw_rows":len(B),"first_positive_2019":len(fp),"us":len(u),"target_us":152898,"unmapped_official_fields":missing_cols,"mirror_derived_incorporation_year":yr is None,"screens_not_replication_verified":True}
 for name,rm in tests.items():
     x=u[~rm].copy()
     inc=pd.to_numeric(x.yearinc,errors="coerce")
